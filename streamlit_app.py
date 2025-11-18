@@ -3,6 +3,10 @@ import pickle
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+import altair as alt
+import re
+import os
+from datetime import date
 
 st.set_page_config(page_title="Dengue App", layout="wide")
 
@@ -324,8 +328,16 @@ with tab3:
     casos_region_max = casos_por_region.iloc[0] if len(casos_por_region) > 0 else 0
     
     # --- KPI 4: Temperatura y humedad promedio ---
-    temp_prom = df_metrics[[c for c in df_metrics.columns if c.lower().startswith("temp")]].values.mean()
-    hum_prom = df_metrics[[c for c in df_metrics.columns if c.lower().startswith("hum")]].values.mean()
+    if "temp_sem_prom" in df_metrics.columns:
+        temp_vals = pd.to_numeric(df_metrics["temp_sem_prom"], errors="coerce")
+        temp_prom = temp_vals.dropna().mean()
+    else:
+        temp_prom = float('nan')
+    if "hum_sem_prom" in df_metrics.columns:
+        hum_vals = pd.to_numeric(df_metrics["hum_sem_prom"], errors="coerce")
+        hum_prom = hum_vals.dropna().mean()
+    else:
+        hum_prom = float('nan')
     
     # --- KPI 5: Provincia más afectada ---
     if "provincia_nombre" in df_metrics.columns:
@@ -389,7 +401,7 @@ with tab3:
         if not casos_por_prov.empty:
             df_prov = casos_por_prov.head(10).reset_index()
             df_prov.columns = ["provincia_nombre", "casos"]
-            chart_prov = alt.Chart(df_prov).mark_barh().encode(
+            chart_prov = alt.Chart(df_prov).mark_bar().encode(
                 y=alt.Y("provincia_nombre:N", title="Provincia", sort="-x"),
                 x=alt.X("casos:Q", title="Total de Casos"),
                 color=alt.Color("provincia_nombre:N", legend=None)
@@ -420,12 +432,6 @@ with tab4:
     st.header("📈 Dashboards")
     st.markdown("---")
     st.subheader("Huella por región (z-score por variable)")
-    import altair as alt
-    import pandas as pd
-    import numpy as np
-    import re
-    from datetime import date
-    import os
 
     # --- Cargar y preprocesar el archivo real ---
     file_path = os.path.join("info", "dengue_enriched_final.xlsx")
