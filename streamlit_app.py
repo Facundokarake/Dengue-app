@@ -999,12 +999,5 @@ with tab4:
     else:
         st.info("No hay datos suficientes para mostrar el ranking de ciudades.")
     
-    st.caption("*Datos reales procesados del archivo dengue_enriched_final.xlsx*")
+    
 
-    # Opción de depuración: mostrar vista previa de dfv y columnas derivadas
-    if st.checkbox("Mostrar vista previa de datos (debug)"):
-        st.write("Columnas disponibles en `dfv`:", dfv.columns.tolist())
-        st.dataframe(dfv.head(10))
-        if available_features:
-            st.write("Descriptivo de features disponibles:")
-            st.dataframe(dfv[available_features].describe(include='all'))
