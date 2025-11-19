@@ -263,23 +263,10 @@ with tab2:
         except Exception as e:
             st.error(f"❌ Error al realizar la predicción: {str(e)}")
 
-with tab3:
-    st.header("📊 Métricas")
-    st.markdown("---")
-    st.markdown("""
-    <span style='font-size:1.1em'><b>¿Por qué estas métricas?</b></span>
-    
-    Las métricas seleccionadas permiten analizar el comportamiento del dengue en Argentina desde diferentes perspectivas:
-    
-    - <b>Casos totales y promedio semanal:</b> muestran la magnitud y tendencia general de la epidemia.
-    - <b>Temperatura, humedad y precipitación:</b> son variables climáticas clave que influyen en la proliferación del mosquito transmisor y la dinámica de los brotes.
-    - <b>Densidad poblacional:</b> refleja el potencial de transmisión en áreas urbanas y rurales.
-    - <b>Lags epidemiológicos:</b> los casos de semanas previas ayudan a entender el efecto de la inercia y el arrastre en la evolución de los contagios.
-    
-    Además, se analizan correlaciones globales para visualizar el impacto relativo de cada variable sobre los casos, facilitando la interpretación y la toma de decisiones.
-    """, unsafe_allow_html=True)
-    
-    # ===== PREPROCESAMIENTO PARA MÉTRICAS (basado en TP2/TP3) =====
+# ===== FUNCIÓN CACHEADA PARA PREPROCESAMIENTO DE MÉTRICAS =====
+@st.cache_data(ttl=3600)  # Cache por 1 hora
+def load_and_preprocess_metrics():
+    """Carga y preprocesa los datos para el tab de métricas (optimizado con cache)"""
     file_path = os.path.join("info", "dengue_enriched_final.xlsx")
     df_m = pd.read_excel(file_path)
     
@@ -324,7 +311,6 @@ with tab3:
                 if pd.notna(r["anio"]) and pd.notna(r["semana_epidemiologica"]):
                     anio = int(r["anio"])
                     semana = int(r["semana_epidemiologica"])
-                    # Limitar semana a máximo 52 (algunos años tienen 53, pero la mayoría 52)
                     if semana > 52:
                         semana = 52
                     return pd.to_datetime(date.fromisocalendar(anio, semana, 1))
@@ -335,32 +321,51 @@ with tab3:
     
     df_m["fecha_semana"] = pd.to_datetime(df_m["fecha_semana"], errors="coerce")
     
-    # Filtrar meses enero-junio (como en TP3)
+    # Filtrar meses enero-junio
     if "mes" not in df_m.columns:
         df_m["mes"] = df_m["fecha_semana"].dt.month.astype("Int64")
     df_m = df_m[df_m["mes"].between(1, 6)].copy()
     
-    # Crear promedios semanales de clima (temp, hum, prec)
+    # Crear promedios semanales de clima
     dias = ["_L","_M","_X","_J","_V","_S","_D"]
     for base in ["temp","hum","prec"]:
         cols = [c for c in df_m.columns if c.lower().startswith(base + "_") and any(c.endswith(d) for d in dias)]
         if cols:
             df_m[f"{base}_sem_prom"] = df_m[cols].mean(axis=1)
     
-    # Agrupar por provincia/departamento/semana/grupo_edad (como en TP3)
+    # Agrupar por provincia/departamento/semana
     group_cols = ["provincia_nombre", "departamento_nombre", "anio", "semana_epidemiologica", "fecha_semana", "clima_region"]
     agg_cols = ["temp_sem_prom", "hum_sem_prom", "prec_sem_prom", "densidad"]
     
-    # Solo incluir columnas que existan
     group_cols = [c for c in group_cols if c in df_m.columns]
     agg_cols = [c for c in agg_cols if c in df_m.columns]
     
-    # Agregación
     agg_dict = {case_col: "sum"}
     for col in agg_cols:
         agg_dict[col] = "mean"
     
     df_metrics = df_m.groupby(group_cols, as_index=False).agg(agg_dict)
+    
+    return df_metrics, case_col
+
+with tab3:
+    st.header("📊 Métricas")
+    st.markdown("---")
+    st.markdown("""
+    <span style='font-size:1.1em'><b>¿Por qué estas métricas?</b></span>
+    
+    Las métricas seleccionadas permiten analizar el comportamiento del dengue en Argentina desde diferentes perspectivas:
+    
+    - <b>Casos totales y promedio semanal:</b> muestran la magnitud y tendencia general de la epidemia.
+    - <b>Temperatura, humedad y precipitación:</b> son variables climáticas clave que influyen en la proliferación del mosquito transmisor y la dinámica de los brotes.
+    - <b>Densidad poblacional:</b> refleja el potencial de transmisión en áreas urbanas y rurales.
+    - <b>Lags epidemiológicos:</b> los casos de semanas previas ayudan a entender el efecto de la inercia y el arrastre en la evolución de los contagios.
+    
+    Además, se analizan correlaciones globales para visualizar el impacto relativo de cada variable sobre los casos, facilitando la interpretación y la toma de decisiones.
+    """, unsafe_allow_html=True)
+    
+    # Cargar datos preprocesados (con cache para optimizar velocidad)
+    df_metrics, case_col = load_and_preprocess_metrics()
     
     # --- CÁLCULO DE KPIs ---
     total_casos = df_metrics[case_col].sum()
@@ -535,11 +540,164 @@ with tab3:
     st.markdown("---")
     st.caption("*Métricas calculadas en tiempo real desde `info/dengue_enriched_final.xlsx`*")
 
+# ===== FUNCIÓN CACHEADA PARA PREPROCESAMIENTO DE DASHBOARDS =====
+@st.cache_data(ttl=3600)  # Cache por 1 hora
+def load_and_preprocess_dashboards():
+    """Carga y preprocesa los datos para el tab de dashboards (optimizado con cache)"""
+    file_path = os.path.join("info", "dengue_enriched_final.xlsx")
+    df = pd.read_excel(file_path)
+
+    # Normalización de texto
+    def normalize_text(s):
+        if pd.isna(s): return s
+        s = str(s).strip()
+        s = (s.replace("Ã'", "Ñ")
+             .replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u")
+             .replace("Á","A").replace("É","E").replace("Í","I").replace("Ó","O").replace("Ú","U"))
+        s = re.sub(r'\s+', ' ', s)
+        return s.upper()
+
+    def fix_prov_name_simple(p):
+        if pd.isna(p): return p
+        p = str(p).strip().upper()
+        if p in {"CABA","CIUDAD AUTONOMA BUENOS AIRES","CAPITAL FEDERAL","CIUDAD AUTONOMA DE BUENOS AIRES"}:
+            return "CIUDAD AUTONOMA DE BUENOS AIRES"
+        repl = str.maketrans("ÁÉÍÓÚÑ", "AEIOUN")
+        return p.translate(repl)
+
+    if "provincia_nombre" in df.columns:
+        df["provincia_nombre"] = df["provincia_nombre"].apply(fix_prov_name_simple)
+
+    if "departamento_nombre" in df.columns:
+        df["departamento_nombre"] = df["departamento_nombre"].apply(lambda x: normalize_text(x) if pd.notna(x) else x)
+
+    # Forzar numéricos
+    maybe_numeric = [c for c in df.columns if any(k in c.lower() for k in ["lat","lon","temp","hum","prec","poblacion","densidad","superficie"])]
+    for c in maybe_numeric:
+        if c in df.columns and df[c].dtype == "O":
+            df[c] = pd.to_numeric(df[c].apply(lambda x: str(x).strip() if pd.notna(x) else x).replace('', pd.NA), errors="coerce")
+
+    # Columna de casos
+    case_col = next((c for c in ["cantidad_casos","casos","n_casos","count_casos"] if c in df.columns), None)
+    if case_col is not None:
+        df[case_col] = pd.to_numeric(df[case_col], errors="coerce").fillna(0).clip(lower=0)
+
+    # Fecha semanal
+    def iso_week_start_safe(year, week):
+        try:
+            y = int(year)
+            w = int(week)
+            if w > 52:
+                w = 52
+            return pd.to_datetime(date.fromisocalendar(y, w, 1))
+        except:
+            return pd.NaT
+    if "fecha_semana" not in df.columns:
+        if {"anio","semana_epidemiologica"}.issubset(df.columns):
+            df["fecha_semana"] = df.apply(lambda r: iso_week_start_safe(r.get("anio"), r.get("semana_epidemiologica")), axis=1)
+        elif "fecha" in df.columns:
+            df["fecha_semana"] = pd.to_datetime(df["fecha"], errors="coerce")
+        else:
+            df["fecha_semana"] = pd.NaT
+
+    # Promedio semanal de clima
+    dias = ["_L","_M","_X","_J","_V","_S","_D"]
+    for base in ["temp","hum","prec"]:
+        cols = [c for c in df.columns if c.lower().startswith(base + "_") and any(c.endswith(d) for d in dias)]
+        if cols:
+            df[f"{base}_sem_prom"] = df[cols].mean(axis=1)
+        else:
+            cand = [c for c in df.columns if c.lower().startswith(base)]
+            if cand:
+                df[f"{base}_sem_prom"] = df[cand].mean(axis=1)
+
+    # Mapeo provincia -> clima_region
+    PROVINCIA_A_CLIMA = {
+        "BUENOS AIRES": "TEMPLADO",
+        "CIUDAD AUTONOMA DE BUENOS AIRES": "TEMPLADO",
+        "CABA": "TEMPLADO",
+        "ENTRE RIOS": "TEMPLADO",
+        "SANTA FE": "TEMPLADO",
+        "CORDOBA": "TEMPLADO",
+        "LA PAMPA": "TEMPLADO",
+        "MISIONES": "SUBTROPICAL",
+        "CHACO": "SUBTROPICAL",
+        "CORRIENTES": "SUBTROPICAL",
+        "FORMOSA": "SUBTROPICAL",
+        "TUCUMAN": "SUBTROPICAL",
+        "CATAMARCA": "ARIDO/SEMIARIDO",
+        "LA RIOJA": "ARIDO/SEMIARIDO",
+        "SAN JUAN": "ARIDO/SEMIARIDO",
+        "SAN LUIS": "ARIDO/SEMIARIDO",
+        "SANTIAGO DEL ESTERO": "ARIDO/SEMIARIDO",
+        "SANTA CRUZ": "ARIDO/SEMIARIDO",
+        "TIERRA DEL FUEGO, ANTARTIDA E ISLAS DEL ATLANTICO SUR": "ARIDO/SEMIARIDO",
+        "TIERRA DEL FUEGO": "ARIDO/SEMIARIDO",
+        "MENDOZA": "FRIO/MONTANA",
+        "NEUQUEN": "FRIO/MONTANA",
+        "RIO NEGRO": "FRIO/MONTANA",
+        "CHUBUT": "FRIO/MONTANA",
+        "JUJUY": "FRIO/MONTANA",
+        "SALTA": "FRIO/MONTANA",
+    }
+
+    if "provincia_nombre" in df.columns:
+        df["clima_region"] = df["provincia_nombre"].map(PROVINCIA_A_CLIMA)
+        provincias_en_df = set(df["provincia_nombre"].dropna().unique())
+        provincias_mapeadas = set(PROVINCIA_A_CLIMA.keys())
+        faltantes = sorted(p for p in provincias_en_df if p not in provincias_mapeadas)
+        if faltantes:
+            df.loc[df["provincia_nombre"].isin(faltantes), "clima_region"] = "TEMPLADO"
+        df["clima_region"] = df["clima_region"].fillna("TEMPLADO")
+    else:
+        df["clima_region"] = "TEMPLADO"
+
+    # Crear densidad si falta
+    if "densidad" not in df.columns:
+        if "poblacion" in df.columns and "superficie" in df.columns:
+            df["densidad"] = pd.to_numeric(df["poblacion"], errors="coerce") / pd.to_numeric(df["superficie"], errors="coerce")
+        else:
+            df["densidad"] = pd.NA
+    
+    return df
+
 with tab4:
     st.header("📈 Dashboards")
     st.markdown("---")
-    st.subheader("Huella por región (z-score por variable)")
-
+    
+    # Explicación de los dashboards
+    st.markdown("""
+    <span style='font-size:1.1em'><b>¿Cómo interactuar con los dashboards?</b></span>
+    
+    Los dashboards interactivos permiten explorar la relación entre variables climáticas, demográficas y casos de dengue en Argentina:
+    
+    **🔍 Dashboard 1: Distribución de variables por región**
+    - Visualiza la distribución de temperatura, humedad, precipitación y densidad poblacional mediante boxplots
+    - **Filtros disponibles:** Selecciona una región climática específica o un mes para analizar
+    - **Qué muestra:** Permite comparar cómo varían estas variables entre las diferentes regiones climáticas (Templado, Subtropical, Árido/Semiárido, Frío/Montaña)
+    - **Interpretación:** Los boxplots muestran la mediana, cuartiles y valores atípicos, ayudando a identificar diferencias regionales significativas
+    
+    **🏙️ Dashboard 2: Top ciudades con más casos**
+    - Ranking de las 20 ciudades más afectadas por dengue
+    - **Visualización:** Barras horizontales ordenadas por total de casos, coloreadas según densidad poblacional
+    - **Qué responde:** ¿Cuáles son los focos urbanos más críticos? ¿Las ciudades más afectadas tienen mayor densidad?
+    - **Interpretación:** El color más intenso indica mayor densidad poblacional, permitiendo evaluar si la concentración urbana correlaciona con más casos
+    
+    **📊 Dashboard 3: Densidad vs. Casos (análisis por región)**
+    - Muestra la relación entre densidad poblacional y casos de dengue mediante líneas de regresión
+    - **Interacción:** Activa/desactiva los puntos de dispersión con el checkbox para ver el detalle de cada observación
+    - **Colores por región:** Azul (Templado), Rojo/Magenta (Subtropical), Naranja (Árido/Semiárido), Verde (Frío/Montaña)
+    - **Qué responde:** ¿La densidad poblacional predice los casos de dengue? ¿Esta relación varía según el clima?
+    - **Interpretación en escala log:** 
+      - Pendiente pronunciada = mayor impacto de la densidad en los casos
+      - Región Subtropical muestra típicamente correlación más fuerte (mayor pendiente)
+      - Región Templada puede mostrar saturación en densidades altas
+      - Regiones áridas/frías tienen menor incidencia independiente de la densidad
+    
+    
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+    
     # --- Cargar y preprocesar el archivo real ---
     file_path = os.path.join("info", "dengue_enriched_final.xlsx")
     df = pd.read_excel(file_path)
@@ -689,8 +847,9 @@ with tab4:
     available_features = [f for f in features if f in dfv.columns]
     if not available_features:
         st.warning("No se detectaron variables climáticas/demográficas disponibles para graficar.")
-    else:
-        # Heatmap
+    
+    # Preparar order_vars para los gráficos
+    if available_features:
         mean_by_reg_feat = (dfv.melt(id_vars=["region"], value_vars=available_features, var_name="variable", value_name="valor")
             .groupby(["region","variable"], as_index=False)["valor"].mean())
         z_df = []
@@ -702,44 +861,144 @@ with tab4:
         z_df = pd.concat(z_df, ignore_index=True)
         order_vars = (z_df.groupby("variable")["z"].apply(lambda s: s.max()-s.min())
             .sort_values(ascending=False).index.tolist())
-        heat = (alt.Chart(z_df)
-            .mark_rect()
-            .encode(
-                x=alt.X("variable:N", title="Variable", sort=order_vars),
-                y=alt.Y("region:N", title="Región"),
-                color=alt.Color("z:Q", title="Z-score", scale=alt.Scale(scheme="blueorange", domainMid=0)),
-                tooltip=["region:N","variable:N",alt.Tooltip("valor:Q",format=".2f"),alt.Tooltip("z:Q",format=".2f")]
-            )
-            .properties(title="Huella por región (z-score por variable)", width=420, height=160)
-        )
-        st.altair_chart(heat, use_container_width=True)
-    st.markdown("---")
+    else:
+        order_vars = available_features
+    
     st.subheader("Distribución de variables por región")
-    # Preparar id_vars existentes para boxplots
+    
+    # Preparar id_vars existentes para boxplots con filtros interactivos
     id_vars = ["region"] + [c for c in ["provincia_nombre","departamento_nombre","mes_desc"] if c in dfv.columns]
     long_df = pd.DataFrame()
     if available_features:
         long_df = dfv.melt(id_vars=id_vars, value_vars=available_features, var_name="variable", value_name="valor").dropna(subset=["valor"])
     else:
         long_df = pd.DataFrame()
-    box = (alt.Chart(long_df)
-        .mark_boxplot(outliers=True)
-        .encode(
-            y=alt.Y("region:N", title="Región", sort=regiones),
-            x=alt.X("valor:Q", title="Valor"),
-            color=alt.Color("region:N", legend=None),
-            tooltip=["region:N","variable:N","valor:Q"]
-        )
-        .properties(width=250, height=120)
-    )
+    
     if not long_df.empty:
+        # Filtros interactivos con Streamlit
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            region_filter = st.selectbox("Filtrar por región:", ["(todas)"] + regiones, key="region_box")
+        with col_f2:
+            if "mes_desc" in long_df.columns:
+                meses_unicos = sorted(long_df["mes_desc"].dropna().unique().tolist())
+                mes_filter = st.selectbox("Filtrar por mes:", ["(todos)"] + meses_unicos, key="mes_box")
+            else:
+                mes_filter = "(todos)"
+        
+        # Aplicar filtros
+        long_df_filtered = long_df.copy()
+        if region_filter != "(todas)":
+            long_df_filtered = long_df_filtered[long_df_filtered["region"] == region_filter]
+        if mes_filter != "(todos)" and "mes_desc" in long_df_filtered.columns:
+            long_df_filtered = long_df_filtered[long_df_filtered["mes_desc"] == mes_filter]
+        
+        box = (alt.Chart(long_df_filtered)
+            .mark_boxplot(outliers=True)
+            .encode(
+                y=alt.Y("region:N", title="Región", sort=regiones),
+                x=alt.X("valor:Q", title="Valor"),
+                color=alt.Color("region:N", legend=None),
+                tooltip=["region:N","variable:N","valor:Q"]
+            )
+            .properties(width=250, height=120)
+        )
         box_grid = (box.facet(column=alt.Column("variable:N", title=None, sort=order_vars))
             .resolve_scale(x="independent")
-            .properties(title="Distribución de variables por región")
+            .properties(title="Distribución de variables por región (con filtros)")
         )
         st.altair_chart(box_grid, use_container_width=True)
     else:
         st.info("No hay datos suficientes para mostrar el boxplot de variables por región.")
+    
+    st.markdown("---")
+    st.subheader("Top Ciudades por Densidad y Casos")
+    
+    # Top ciudades con mayor densidad y casos
+    if "departamento_nombre" in df.columns and "densidad" in df.columns and case_col:
+        df_top = (df.groupby(["provincia_nombre", "departamento_nombre"], as_index=False)
+                    .agg({case_col: "sum", "densidad": "mean"})
+                    .sort_values(case_col, ascending=False)
+                    .head(20))
+        df_top = df_top.rename(columns={case_col: "total_casos"})
+        df_top["ciudad"] = df_top["departamento_nombre"] + ", " + df_top["provincia_nombre"]
+        
+        # Gráfico de barras con densidad
+        bar_top = (alt.Chart(df_top)
+            .mark_bar()
+            .encode(
+                x=alt.X("total_casos:Q", title="Total de casos"),
+                y=alt.Y("ciudad:N", title="Ciudad", sort="-x"),
+                color=alt.Color("densidad:Q", title="Densidad (hab/km²)", scale=alt.Scale(scheme="viridis")),
+                tooltip=[
+                    alt.Tooltip("ciudad:N", title="Ciudad"),
+                    alt.Tooltip("total_casos:Q", format=",", title="Total casos"),
+                    alt.Tooltip("densidad:Q", format=".1f", title="Densidad")
+                ]
+            )
+            .properties(
+                title="Top 20 ciudades con más casos de dengue (coloreadas por densidad)",
+                width=600, height=450
+            )
+        )
+        st.altair_chart(bar_top, use_container_width=True)
+        
+        # Gráfico combinado: dispersión + regresión (log-log) - estilo TP4
+        st.markdown("**Densidad vs. Casos — todas las regiones (escala log, alterná puntos/líneas)**")
+        
+        # Obtener columna de casos del dataframe original
+        case_col_full = next((c for c in ["cantidad_casos","casos","n_casos","count_casos"] if c in df.columns), None)
+        if case_col_full and "densidad" in df.columns and "clima_region" in df.columns:
+            df_scatter = df[["clima_region", "densidad", case_col_full]].dropna().copy()
+            df_scatter = df_scatter.rename(columns={case_col_full: "casos"})
+            
+            # Checkbox para mostrar/ocultar puntos
+            show_points = st.checkbox("Mostrar puntos de dispersión", value=False, key="show_scatter_points")
+            
+            # Colores personalizados por región
+            color_scale = alt.Scale(
+                domain=["TEMPLADO", "SUBTROPICAL", "ARIDO/SEMIARIDO", "FRIO/MONTANA"],
+                range=["#2E86AB", "#A23B72", "#F18F01", "#06A77D"]  # Azul, Rojo/Magenta, Naranja/Amarillo, Verde
+            )
+            
+            # Puntos de dispersión con escala log (condicional)
+            if show_points:
+                scatter = (alt.Chart(df_scatter)
+                    .mark_circle(opacity=0.4)
+                    .encode(
+                        x=alt.X("densidad:Q", title="Densidad (log hab/km²)", scale=alt.Scale(type="log")),
+                        y=alt.Y("casos:Q", title="Casos (log)", scale=alt.Scale(type="log")),
+                        color=alt.Color("clima_region:N", title="Región", scale=color_scale),
+                        tooltip=["clima_region:N", 
+                                alt.Tooltip("densidad:Q", format=".1f", title="Densidad"),
+                                alt.Tooltip("casos:Q", format=",", title="Casos")]
+                    )
+                )
+            else:
+                scatter = alt.Chart(df_scatter).mark_point(opacity=0)  # Invisible
+            
+            # Líneas de regresión por región
+            regression = (alt.Chart(df_scatter)
+                .transform_regression("densidad", "casos", groupby=["clima_region"])
+                .mark_line(size=3)
+                .encode(
+                    x=alt.X("densidad:Q", title="Densidad (log hab/km²)", scale=alt.Scale(type="log")),
+                    y=alt.Y("casos:Q", title="Casos (log)", scale=alt.Scale(type="log")),
+                    color=alt.Color("clima_region:N", title="Región", scale=color_scale),
+                    tooltip=["clima_region:N"]
+                )
+            )
+            
+            combined = (scatter + regression).properties(
+                title="Densidad vs. Casos — todas las regiones (escala log)",
+                width=600, height=400
+            )
+            st.altair_chart(combined, use_container_width=True)
+        else:
+            st.info("No hay datos suficientes para el gráfico de dispersión + regresión.")
+    else:
+        st.info("No hay datos suficientes para mostrar el ranking de ciudades.")
+    
     st.caption("*Datos reales procesados del archivo dengue_enriched_final.xlsx*")
 
     # Opción de depuración: mostrar vista previa de dfv y columnas derivadas
