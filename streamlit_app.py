@@ -69,6 +69,93 @@ with tab1:
     - Comprender los patrones epidemiológicos del dengue en Argentina
     """)
 
+
+# ---- Helpers: preprocesamiento ligero semejante a los Colab ----
+def preprocess_dengue(file_path):
+    """Carga y preprocesa el Excel para obtener columnas canónicas usadas en KPIs.
+    Se enfoca en: normalizar nombres, forzar numéricos, computar `temp_sem_prom`,
+    `hum_sem_prom`, `prec_sem_prom`, fecha semanal y mapear `clima_region`.
+    """
+    df = pd.read_excel(file_path)
+
+    # coerción numérica robusta (adapta comas decimales)
+    def coerce_numeric(x):
+        if pd.isna(x):
+            return np.nan
+        s = str(x).strip()
+        # coma decimal -> punto (si no hay punto ya)
+        if ("," in s) and ("." not in s):
+            s = s.replace('.', '').replace(',', '.')
+        # quitar separadores de miles residuales
+        s = re.sub(r'(?<=\d)\.(?=\d{3}\b)', '', s)
+        try:
+            return float(s)
+        except:
+            return np.nan
+
+    # Normalizadores simples de texto
+    def fix_prov_name_simple_local(p):
+        if pd.isna(p):
+            return p
+        p = str(p).strip().upper()
+        if p in {"CABA","CIUDAD AUTONOMA BUENOS AIRES","CAPITAL FEDERAL","CIUDAD AUTONOMA DE BUENOS AIRES"}:
+            return "CIUDAD AUTONOMA DE BUENOS AIRES"
+        repl = str.maketrans("ÁÉÍÓÚÑ", "AEIOUN")
+        return p.translate(repl)
+
+    if "provincia_nombre" in df.columns:
+        df["provincia_nombre"] = df["provincia_nombre"].apply(fix_prov_name_simple_local)
+
+    # detectar columna de casos y forzar numérico
+    case_col = next((c for c in ["cantidad_casos","casos","n_casos","count_casos"] if c in df.columns), None)
+    if case_col is not None:
+        df[case_col] = df[case_col].apply(coerce_numeric).fillna(0).clip(lower=0)
+
+    # fecha semanal
+    def iso_week_start_safe(year, week):
+        try:
+            return pd.to_datetime(date.fromisocalendar(int(year), int(week), 1))
+        except:
+            return pd.NaT
+
+    if "fecha_semana" not in df.columns:
+        if {"anio","semana_epidemiologica"}.issubset(df.columns):
+            df["fecha_semana"] = df.apply(lambda r: iso_week_start_safe(r.get("anio"), r.get("semana_epidemiologica")), axis=1)
+        elif "fecha" in df.columns:
+            df["fecha_semana"] = pd.to_datetime(df["fecha"], errors="coerce")
+        else:
+            df["fecha_semana"] = pd.NaT
+
+    # calcular temp/hum/prec semanales por fila (intentar usar columnas diarias si existen)
+    dias = ["_L","_M","_X","_J","_V","_S","_D"]
+    for base in ["temp","hum","prec"]:
+        cols = [c for c in df.columns if c.lower().startswith(base + "_") and any(c.endswith(d) for d in dias)]
+        if cols:
+            df[f"{base}_sem_prom"] = df[cols].apply(lambda s: pd.to_numeric(s, errors='coerce')).mean(axis=1)
+        else:
+            cand = [c for c in df.columns if c.lower().startswith(base)]
+            if cand:
+                df[f"{base}_sem_prom"] = df[cand].apply(lambda s: pd.to_numeric(s, errors='coerce')).mean(axis=1)
+
+    # mapear provincia -> clima_region (fallback TEMPLADO)
+    PROVINCIA_A_CLIMA_LOCAL = {
+        "BUENOS AIRES":"TEMPLADO","CIUDAD AUTONOMA DE BUENOS AIRES":"TEMPLADO","CABA":"TEMPLADO",
+        "ENTRE RIOS":"TEMPLADO","SANTA FE":"TEMPLADO","CORDOBA":"TEMPLADO","LA PAMPA":"TEMPLADO",
+        "MISIONES":"SUBTROPICAL","CHACO":"SUBTROPICAL","CORRIENTES":"SUBTROPICAL","FORMOSA":"SUBTROPICAL","TUCUMAN":"SUBTROPICAL",
+        "CATAMARCA":"ARIDO/SEMIARIDO","LA RIOJA":"ARIDO/SEMIARIDO","SAN JUAN":"ARIDO/SEMIARIDO",
+        "SAN LUIS":"ARIDO/SEMIARIDO","SANTIAGO DEL ESTERO":"ARIDO/SEMIARIDO","SANTA CRUZ":"ARIDO/SEMIARIDO",
+        "TIERRA DEL FUEGO, ANTARTIDA E ISLAS DEL ATLANTICO SUR":"ARIDO/SEMIARIDO","TIERRA DEL FUEGO":"ARIDO/SEMIARIDO",
+        "MENDOZA":"FRIO/MONTANA","NEUQUEN":"FRIO/MONTANA","RIO NEGRO":"FRIO/MONTANA",
+        "CHUBUT":"FRIO/MONTANA","JUJUY":"FRIO/MONTANA","SALTA":"FRIO/MONTANA",
+    }
+    if "provincia_nombre" in df.columns:
+        df["clima_region"] = df["provincia_nombre"].map(PROVINCIA_A_CLIMA_LOCAL).fillna("TEMPLADO")
+    else:
+        df["clima_region"] = "TEMPLADO"
+
+    return df
+
+
 with tab2:
     st.header("📖 Uso de la App")
     
@@ -269,10 +356,14 @@ with tab3:
     st.header("📊 Métricas")
     st.markdown("---")
     
-    # Cargar datos para métricas (mismo preprocesamiento básico que en dashboards)
+    # Cargar y preprocesar datos para métricas (usar preprocesado similar a los Colab)
     import os
     file_path = os.path.join("info", "dengue_enriched_final.xlsx")
-    df_metrics = pd.read_excel(file_path)
+    try:
+        df_metrics = preprocess_dengue(file_path)
+    except Exception as e:
+        st.error(f"Error al preprocesar los datos para métricas: {e}")
+        df_metrics = pd.read_excel(file_path)
     
     # Asegurar columna de casos
     case_col = next((c for c in ["cantidad_casos","casos","n_casos","count_casos"] if c in df_metrics.columns), None)
@@ -330,12 +421,14 @@ with tab3:
     # --- KPI 4: Temperatura y humedad promedio ---
     if "temp_sem_prom" in df_metrics.columns:
         temp_vals = pd.to_numeric(df_metrics["temp_sem_prom"], errors="coerce")
-        temp_prom = temp_vals.dropna().mean()
+        temp_vals_clean = temp_vals.dropna()
+        temp_prom = temp_vals_clean.mean() if len(temp_vals_clean) > 0 else float('nan')
     else:
         temp_prom = float('nan')
     if "hum_sem_prom" in df_metrics.columns:
         hum_vals = pd.to_numeric(df_metrics["hum_sem_prom"], errors="coerce")
-        hum_prom = hum_vals.dropna().mean()
+        hum_vals_clean = hum_vals.dropna()
+        hum_prom = hum_vals_clean.mean() if len(hum_vals_clean) > 0 else float('nan')
     else:
         hum_prom = float('nan')
     
@@ -366,12 +459,37 @@ with tab3:
     with col2:
         st.metric("Casos Promedio por Semana", f"{prom_casos_semana:.1f}")
     with col3:
-        st.metric("Temperatura Promedio", f"{temp_prom:.1f}°C")
+        # Mostrar temperatura: preferir valor del dataset; si no existe, usar input de usuario si está disponible
+        temp_fallback = None
+        try:
+            if not pd.isna(temp_prom):
+                st.metric("Temperatura Promedio", f"{temp_prom:.1f}°C")
+            else:
+                # intentar leer valor ingresado en la pestaña de uso (key: 'temp')
+                if hasattr(st, 'session_state') and st.session_state.get('temp') is not None:
+                    temp_fallback = float(st.session_state.get('temp'))
+                    st.metric("Temperatura Promedio", f"{temp_fallback:.1f}°C", delta="Entrada usuario")
+                else:
+                    st.metric("Temperatura Promedio", "N/A", delta="Sin datos")
+        except Exception:
+            st.metric("Temperatura Promedio", "N/A", delta="Error")
     
     col4, col5, col6 = st.columns(3)
     
     with col4:
-        st.metric("Humedad Promedio", f"{hum_prom:.1f}%")
+        # Mostrar humedad: preferir valor del dataset; si no existe, usar input de usuario si está disponible
+        hum_fallback = None
+        try:
+            if not pd.isna(hum_prom):
+                st.metric("Humedad Promedio", f"{hum_prom:.1f}%")
+            else:
+                if hasattr(st, 'session_state') and st.session_state.get('hum') is not None:
+                    hum_fallback = float(st.session_state.get('hum'))
+                    st.metric("Humedad Promedio", f"{hum_fallback:.1f}%", delta="Entrada usuario")
+                else:
+                    st.metric("Humedad Promedio", "N/A", delta="Sin datos")
+        except Exception:
+            st.metric("Humedad Promedio", "N/A", delta="Error")
     with col5:
         st.metric("Región Más Afectada", region_mas_afectada, delta=f"{int(casos_region_max):,} casos")
     with col6:
