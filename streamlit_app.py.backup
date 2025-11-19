@@ -265,27 +265,16 @@ with tab2:
 with tab3:
     st.header("📊 Métricas")
     st.markdown("---")
-    st.markdown("""
-    <span style='font-size:1.1em'><b>¿Por qué estas métricas?</b></span>
     
-    Las métricas seleccionadas permiten analizar el comportamiento del dengue en Argentina desde diferentes perspectivas:
-    
-    - <b>Casos totales y promedio semanal:</b> muestran la magnitud y tendencia general de la epidemia.
-    - <b>Temperatura, humedad y precipitación:</b> son variables climáticas clave que influyen en la proliferación del mosquito transmisor y la dinámica de los brotes.
-    - <b>Densidad poblacional:</b> refleja el potencial de transmisión en áreas urbanas y rurales.
-    - <b>Lags epidemiológicos:</b> los casos de semanas previas ayudan a entender el efecto de la inercia y el arrastre en la evolución de los contagios.
-    
-    Además, se analizan correlaciones globales para visualizar el impacto relativo de cada variable sobre los casos, facilitando la interpretación y la toma de decisiones.
-    """, unsafe_allow_html=True)
-    
-    # ===== PREPROCESAMIENTO PARA MÉTRICAS (basado en TP2/TP3) =====
+    # Cargar datos para métricas (mismo preprocesamiento básico que en dashboards)
+    import os
     file_path = os.path.join("info", "dengue_enriched_final.xlsx")
-    df_m = pd.read_excel(file_path)
+    df_metrics = pd.read_excel(file_path)
     
-    # Columna de casos
-    case_col = next((c for c in ["cantidad_casos","casos","n_casos","count_casos"] if c in df_m.columns), "cantidad_casos")
-    if case_col in df_m.columns:
-        df_m[case_col] = pd.to_numeric(df_m[case_col], errors="coerce").fillna(0).clip(lower=0)
+    # Asegurar columna de casos
+    case_col = next((c for c in ["cantidad_casos","casos","n_casos","count_casos"] if c in df_metrics.columns), None)
+    if case_col is None:
+        case_col = "cantidad_casos"
     
     # Normalizar provincia
     def fix_prov_name_simple(p):
@@ -296,8 +285,8 @@ with tab3:
         repl = str.maketrans("ÁÉÍÓÚÑ", "AEIOUN")
         return p.translate(repl)
     
-    if "provincia_nombre" in df_m.columns:
-        df_m["provincia_nombre"] = df_m["provincia_nombre"].apply(fix_prov_name_simple)
+    if "provincia_nombre" in df_metrics.columns:
+        df_metrics["provincia_nombre"] = df_metrics["provincia_nombre"].apply(fix_prov_name_simple)
     
     # Mapeo provincia -> clima_region
     PROVINCIA_A_CLIMA = {
@@ -311,76 +300,59 @@ with tab3:
         "CHUBUT":"FRIO/MONTANA","JUJUY":"FRIO/MONTANA","SALTA":"FRIO/MONTANA",
     }
     
-    if "provincia_nombre" in df_m.columns:
-        df_m["clima_region"] = df_m["provincia_nombre"].map(PROVINCIA_A_CLIMA).fillna("TEMPLADO")
+    if "provincia_nombre" in df_metrics.columns:
+        df_metrics["clima_region"] = df_metrics["provincia_nombre"].map(PROVINCIA_A_CLIMA).fillna("TEMPLADO")
     else:
-        df_m["clima_region"] = "TEMPLADO"
+        df_metrics["clima_region"] = "TEMPLADO"
     
-    # Crear fecha_semana si no existe
-    if "fecha_semana" not in df_m.columns and {"anio","semana_epidemiologica"}.issubset(df_m.columns):
-        def safe_fecha_semana(r):
-            try:
-                if pd.notna(r["anio"]) and pd.notna(r["semana_epidemiologica"]):
-                    anio = int(r["anio"])
-                    semana = int(r["semana_epidemiologica"])
-                    # Limitar semana a máximo 52 (algunos años tienen 53, pero la mayoría 52)
-                    if semana > 52:
-                        semana = 52
-                    return pd.to_datetime(date.fromisocalendar(anio, semana, 1))
-                return pd.NaT
-            except:
-                return pd.NaT
-        df_m["fecha_semana"] = df_m.apply(safe_fecha_semana, axis=1)
+    # Asegurar casos numéricos
+    if case_col in df_metrics.columns:
+        df_metrics[case_col] = pd.to_numeric(df_metrics[case_col], errors="coerce").fillna(0).clip(lower=0)
     
-    df_m["fecha_semana"] = pd.to_datetime(df_m["fecha_semana"], errors="coerce")
-    
-    # Filtrar meses enero-junio (como en TP3)
-    if "mes" not in df_m.columns:
-        df_m["mes"] = df_m["fecha_semana"].dt.month.astype("Int64")
-    df_m = df_m[df_m["mes"].between(1, 6)].copy()
-    
-    # Crear promedios semanales de clima (temp, hum, prec)
-    dias = ["_L","_M","_X","_J","_V","_S","_D"]
-    for base in ["temp","hum","prec"]:
-        cols = [c for c in df_m.columns if c.lower().startswith(base + "_") and any(c.endswith(d) for d in dias)]
-        if cols:
-            df_m[f"{base}_sem_prom"] = df_m[cols].mean(axis=1)
-    
-    # Agrupar por provincia/departamento/semana/grupo_edad (como en TP3)
-    group_cols = ["provincia_nombre", "departamento_nombre", "anio", "semana_epidemiologica", "fecha_semana", "clima_region"]
-    agg_cols = ["temp_sem_prom", "hum_sem_prom", "prec_sem_prom", "densidad"]
-    
-    # Solo incluir columnas que existan
-    group_cols = [c for c in group_cols if c in df_m.columns]
-    agg_cols = [c for c in agg_cols if c in df_m.columns]
-    
-    # Agregación
-    agg_dict = {case_col: "sum"}
-    for col in agg_cols:
-        agg_dict[col] = "mean"
-    
-    df_metrics = df_m.groupby(group_cols, as_index=False).agg(agg_dict)
-    
-    # --- CÁLCULO DE KPIs ---
+    # --- KPI 1: Total de casos ---
     total_casos = df_metrics[case_col].sum()
     
-    # Casos promedio por semana
-    casos_por_semana = df_metrics.groupby(["anio","semana_epidemiologica"], as_index=False)[case_col].sum()
-    prom_casos_semana = casos_por_semana[case_col].mean()
+    # --- KPI 2: Casos promedio por semana (agregado a nivel semanal) ---
+    if "anio" in df_metrics.columns and "semana_epidemiologica" in df_metrics.columns:
+        casos_por_semana = df_metrics.groupby(["anio","semana_epidemiologica"], as_index=False)[case_col].sum()
+        prom_casos_semana = casos_por_semana[case_col].mean()
+    else:
+        prom_casos_semana = df_metrics[case_col].mean()
     
-    # Región más afectada
+    # --- KPI 3: Región más afectada ---
     casos_por_region = df_metrics.groupby("clima_region")[case_col].sum().sort_values(ascending=False)
     region_mas_afectada = casos_por_region.index[0] if len(casos_por_region) > 0 else "N/A"
     casos_region_max = casos_por_region.iloc[0] if len(casos_por_region) > 0 else 0
     
-    # Temperatura y humedad promedio (de datos agregados)
-    temp_prom = df_metrics["temp_sem_prom"].mean() if "temp_sem_prom" in df_metrics.columns else float('nan')
-    hum_prom = df_metrics["hum_sem_prom"].mean() if "hum_sem_prom" in df_metrics.columns else float('nan')
+    # --- KPI 4: Temperatura y humedad promedio ---
+    if "temp_sem_prom" in df_metrics.columns:
+        temp_vals = pd.to_numeric(df_metrics["temp_sem_prom"], errors="coerce")
+        temp_prom = temp_vals.dropna().mean()
+    else:
+        temp_prom = float('nan')
+    if "hum_sem_prom" in df_metrics.columns:
+        hum_vals = pd.to_numeric(df_metrics["hum_sem_prom"], errors="coerce")
+        hum_prom = hum_vals.dropna().mean()
+    else:
+        hum_prom = float('nan')
     
-    # Provincia más afectada
-    casos_por_prov = df_metrics.groupby("provincia_nombre")[case_col].sum().sort_values(ascending=False)
-    prov_mas_afectada = casos_por_prov.index[0] if len(casos_por_prov) > 0 else "N/A"
-    casos_prov_max = casos_por_prov.iloc[0] if len(casos_por_prov) > 0 else 0
+    # --- KPI 5: Provincia más afectada ---
+    if "provincia_nombre" in df_metrics.columns:
+        casos_por_prov = df_metrics.groupby("provincia_nombre")[case_col].sum().sort_values(ascending=False)
+        prov_mas_afectada = casos_por_prov.index[0] if len(casos_por_prov) > 0 else "N/A"
+        casos_prov_max = casos_por_prov.iloc[0] if len(casos_por_prov) > 0 else 0
+    else:
+        prov_mas_afectada = "N/A"
+        casos_prov_max = 0
+    
+    # --- KPI 6: Distribución por grupo etario ---
+    if "grupo_edad_desc" in df_metrics.columns:
+        casos_por_edad = df_metrics.groupby("grupo_edad_desc")[case_col].sum().sort_values(ascending=False)
+        edad_mas_afectada = casos_por_edad.index[0] if len(casos_por_edad) > 0 else "N/A"
+        casos_edad_max = casos_por_edad.iloc[0] if len(casos_por_edad) > 0 else 0
+    else:
+        edad_mas_afectada = "N/A"
+        casos_edad_max = 0
     
     # --- Mostrar KPIs en columnas ---
     st.subheader("🎯 Indicadores Clave (KPIs)")
@@ -403,134 +375,53 @@ with tab3:
         st.metric("Provincia Más Afectada", prov_mas_afectada, delta=f"{int(casos_prov_max):,} casos")
     
     st.markdown("---")
-    # =====================
-    # Análisis Feb-Mar-Abr 2024-2025
-    # =====================
-    st.subheader("🗓️ FMA (Febrero-Marzo-Abril) 2024-2025")
-    if "fecha_semana" in df_metrics.columns:
-        fma_mask = (df_metrics["fecha_semana"].dt.year.isin([2024, 2025]) &
-                    df_metrics["fecha_semana"].dt.month.isin([2,3,4]))
-        df_fma = df_metrics[fma_mask].copy()
-        if not df_fma.empty:
-            semanas_fma = df_fma.groupby(["anio","semana_epidemiologica"], as_index=False)[case_col].sum()
-            prom_sem_fma = semanas_fma[case_col].mean()
-            # Semana pico (máximo casos)
-            pico_row = semanas_fma.loc[semanas_fma[case_col].idxmax()]
-            pico_anio = pico_row["anio"]
-            pico_sem = pico_row["semana_epidemiologica"]
-            df_pico = df_fma[(df_fma["anio"]==pico_anio) & (df_fma["semana_epidemiologica"]==pico_sem)]
-            temp_pico = df_pico["temp_sem_prom"].mean() if "temp_sem_prom" in df_pico.columns else float('nan')
-            hum_pico = df_pico["hum_sem_prom"].mean() if "hum_sem_prom" in df_pico.columns else float('nan')
-            prec_pico = df_pico["prec_sem_prom"].mean() if "prec_sem_prom" in df_pico.columns else float('nan')
-            prec_prom_fma = df_fma["prec_sem_prom"].mean() if "prec_sem_prom" in df_fma.columns else float('nan')
-            # Densidad promedio en todo el período FMA y en la semana pico
-            dens_prom_fma = df_fma["densidad"].mean() if "densidad" in df_fma.columns else float('nan')
-            dens_pico = df_pico["densidad"].mean() if "densidad" in df_pico.columns else float('nan')
-
-            col_fma1, col_fma2, col_fma3 = st.columns(3)
-            with col_fma1:
-                st.metric("Promedio Semanal FMA", f"{prom_sem_fma:.1f}")
-            with col_fma2:
-                st.metric("Temp Semana Pico", f"{temp_pico:.1f}°C", help=f"Semana {int(pico_sem)} - {int(pico_anio)}")
-            with col_fma3:
-                st.metric("Hum Semana Pico", f"{hum_pico:.1f}%", help=f"Semana {int(pico_sem)} - {int(pico_anio)}")
-            col_fma4, col_fma5, col_fma6 = st.columns(3)
-            with col_fma4:
-                st.metric("Densidad Promedio FMA", f"{dens_prom_fma:.1f}" if not pd.isna(dens_prom_fma) else "N/D")
-            with col_fma5:
-                st.metric("Densidad Semana Pico", f"{dens_pico:.1f}" if not pd.isna(dens_pico) else "N/D", help=f"Semana {int(pico_sem)} - {int(pico_anio)}")
-            with col_fma6:
-                st.metric("Prec Semana Pico", f"{prec_pico:.1f} mm" if not pd.isna(prec_pico) else "N/D", help=f"Semana {int(pico_sem)} - {int(pico_anio)}")
-         
-
-            # ...existing code...
-        else:
-            st.info("No hay datos para Febrero-Marzo-Abril 2024-2025 en el archivo.")
-    else:
-        st.info("No se puede calcular FMA: falta 'fecha_semana'.")
-    st.markdown("---")
     
     # --- Gráficos de contexto ---
-
-    st.subheader("📈 Estacionalidad de Casos por Mes y Año")
-    # Heatmap de casos promedio por mes y año
-    if "fecha_semana" in df_metrics.columns:
-        df_metrics["mes"] = df_metrics["fecha_semana"].dt.month
-        df_metrics["anio"] = df_metrics["fecha_semana"].dt.year
-        df_mes_anio = df_metrics.groupby(["anio","mes"], as_index=False)[case_col].mean()
-        heatmap = alt.Chart(df_mes_anio).mark_rect().encode(
-            x=alt.X("anio:O", title="Año"),
-            y=alt.Y("mes:O", title="Mes"),
-            color=alt.Color(f"{case_col}:Q", title="Casos promedio", scale=alt.Scale(scheme="reds")),
-            tooltip=["anio","mes",alt.Tooltip(f"{case_col}:Q", format=".1f", title="Casos promedio")]
-        ).properties(title="Estacionalidad: concentración de casos por mes y año", width=500, height=300)
-        st.altair_chart(heatmap, use_container_width=True)
-
-        # Análisis textual de los meses con más casos
-        top_meses = df_mes_anio.groupby("mes")[case_col].mean().sort_values(ascending=False).head(3)
-        meses_map = {1:"Enero",2:"Febrero",3:"Marzo",4:"Abril",5:"Mayo",6:"Junio",7:"Julio",8:"Agosto",9:"Septiembre",10:"Octubre",11:"Noviembre",12:"Diciembre"}
-        st.markdown(f"**Meses con mayor promedio de casos:** {'; '.join([meses_map[m] for m in top_meses.index])}")
-        st.caption(f"Promedio de casos por mes: {', '.join([f'{meses_map[m]}: {int(v):,}' for m,v in top_meses.items()])}")
-
+    st.subheader("📈 Análisis Complementarios")
+    
+    col_g1, col_g2 = st.columns(2)
+    
+    with col_g1:
+        st.write("**Casos por Región**")
+        if not casos_por_region.empty:
+            df_region = casos_por_region.reset_index()
+            df_region.columns = ["clima_region", "casos"]
+            chart_region = alt.Chart(df_region).mark_bar().encode(
+                x=alt.X("clima_region:N", title="Región"),
+                y=alt.Y("casos:Q", title="Total de Casos"),
+                color=alt.Color("clima_region:N", legend=None)
+            ).properties(width=300, height=250)
+            st.altair_chart(chart_region, use_container_width=True)
+    
+    with col_g2:
+        st.write("**Casos por Provincia (Top 10)**")
+        if not casos_por_prov.empty:
+            df_prov = casos_por_prov.head(10).reset_index()
+            df_prov.columns = ["provincia_nombre", "casos"]
+            chart_prov = alt.Chart(df_prov).mark_bar().encode(
+                y=alt.Y("provincia_nombre:N", title="Provincia", sort="-x"),
+                x=alt.X("casos:Q", title="Total de Casos"),
+                color=alt.Color("provincia_nombre:N", legend=None)
+            ).properties(width=300, height=300)
+            st.altair_chart(chart_prov, use_container_width=True)
+    
     st.markdown("---")
-    st.subheader("📊 Impacto de Variables Climáticas (Global)")
-    # Correlación global entre casos y clima
-    clima_vars = ["temp_sem_prom", "hum_sem_prom", "prec_sem_prom"]
-    df_clima = df_metrics.dropna(subset=clima_vars + [case_col])
-    corrs = []
-    for v in clima_vars:
-        corr = df_clima[v].corr(df_clima[case_col])
-        corrs.append({"variable": v, "corr": corr})
-    corr_df = pd.DataFrame(corrs)
-    corr_df["variable"] = corr_df["variable"].map({"temp_sem_prom":"Temperatura","hum_sem_prom":"Humedad","prec_sem_prom":"Precipitación"})
-    bar_corr = alt.Chart(corr_df).mark_bar().encode(
-        x=alt.X("variable:N", title="Variable climática"),
-        y=alt.Y("corr:Q", title="Correlación con casos"),
-        color=alt.Color("variable:N", legend=None),
-        tooltip=["variable:N",alt.Tooltip("corr:Q", format=".2f")]
-    ).properties(title="Correlación global entre variables climáticas y casos de dengue", width=500, height=300)
-    st.altair_chart(bar_corr, use_container_width=True)
-
-    # Análisis textual
-    var_max = corr_df.loc[corr_df["corr"].abs().idxmax()]
-    st.markdown(f"**La variable con mayor impacto sobre los casos es:** <span style='color:orange'><b>{var_max['variable']}</b></span> (correlación = {var_max['corr']:.2f})", unsafe_allow_html=True)
-
-
-    # Impacto global: densidad y lags (similar a impacto climático)
-    st.subheader("📊 Impacto de Densidad y Lags (Global)")
-    keys = [k for k in ["provincia_nombre","departamento_nombre"] if k in df_metrics.columns]
-    sort_keys = (keys + ["fecha_semana"]) if "fecha_semana" in df_metrics.columns else (keys + ["anio","semana_epidemiologica"]) 
-    df_metrics = df_metrics.sort_values(sort_keys).copy()
-    for n in [1,2,4]:
-        coln = f"lag{n}"
-        if coln not in df_metrics.columns:
-            if keys:
-                df_metrics[coln] = df_metrics.groupby(keys)[case_col].shift(n)
-            else:
-                df_metrics[coln] = df_metrics[case_col].shift(n)
-    # Preparar correlaciones
-    for c in ["densidad","lag1","lag2","lag4"]:
-        if c in df_metrics.columns and df_metrics[c].dtype == "O":
-            df_metrics[c] = pd.to_numeric(df_metrics[c], errors="coerce")
-    impact_vars = [v for v in ["densidad","lag1","lag2","lag4"] if v in df_metrics.columns]
-    corr_rows = []
-    for v in impact_vars:
-        sub = df_metrics[[v, case_col]].dropna()
-        if not sub.empty:
-            corr_rows.append({"variable": v, "corr": sub[v].corr(sub[case_col])})
-    if corr_rows:
-        corr_df2 = pd.DataFrame(corr_rows)
-        label_map = {"densidad":"Densidad","lag1":"Lag 1 semana","lag2":"Lag 2 semanas","lag4":"Lag 4 semanas"}
-        corr_df2["variable"] = corr_df2["variable"].map(label_map)
-        bar_imp = alt.Chart(corr_df2).mark_bar().encode(
-            x=alt.X("variable:N", title="Variable"),
-            y=alt.Y("corr:Q", title="Correlación con casos"),
-            color=alt.Color("variable:N", legend=None),
-            tooltip=["variable:N", alt.Tooltip("corr:Q", format=".2f")]
-        ).properties(title="Impacto de densidad y lags (correlación global)", width=500, height=280)
-        st.altair_chart(bar_imp, use_container_width=True)
-    else:
-        st.info("No hay suficientes datos para calcular correlaciones de densidad y lags.")
+    
+    # --- Serie temporal por región ---
+    if "anio" in df_metrics.columns and "semana_epidemiologica" in df_metrics.columns:
+        st.subheader("📅 Evolución Temporal por Región")
+        ts_data = df_metrics.groupby(["anio","semana_epidemiologica","clima_region"], as_index=False)[case_col].sum()
+        ts_data["fecha_id"] = ts_data["anio"].astype(str) + "-W" + ts_data["semana_epidemiologica"].astype(str)
+        
+        ts_chart = alt.Chart(ts_data).mark_line(point=True).encode(
+            x=alt.X("fecha_id:N", title="Año-Semana"),
+            y=alt.Y(f"{case_col}:Q", title="Casos"),
+            color=alt.Color("clima_region:N", title="Región"),
+            tooltip=["fecha_id:N","clima_region:N",f"{case_col}:Q"]
+        ).properties(width=800, height=300, title="Casos por Región a lo Largo del Tiempo")
+        
+        st.altair_chart(ts_chart, use_container_width=True)
+    
     st.markdown("---")
     st.caption("*Métricas calculadas en tiempo real desde `info/dengue_enriched_final.xlsx`*")
 
@@ -581,15 +472,8 @@ with tab4:
 
     # Fecha semanal (si aún no existe)
     def iso_week_start_safe(year, week):
-        try:
-            y = int(year)
-            w = int(week)
-            # Limitar a máximo 52 semanas
-            if w > 52:
-                w = 52
-            return pd.to_datetime(date.fromisocalendar(y, w, 1))
-        except:
-            return pd.NaT
+        try: return pd.to_datetime(date.fromisocalendar(int(year), int(week), 1))
+        except: return pd.NaT
     if "fecha_semana" not in df.columns:
         if {"anio","semana_epidemiologica"}.issubset(df.columns):
             df["fecha_semana"] = df.apply(lambda r: iso_week_start_safe(r.get("anio"), r.get("semana_epidemiologica")), axis=1)
