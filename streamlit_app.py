@@ -214,8 +214,9 @@ with tab2:
     # Botón de predicción
     if st.button("🔮 Predecir", use_container_width=True, type="primary"):
         try:
-            # Cargar el modelo
-            with open("/workspaces/Dengue-app/Modelo/model.pkl", "rb") as f:
+            # Cargar el modelo (ruta relativa para compatibilidad con Streamlit Cloud)
+            model_path = os.path.join("Modelo", "model.pkl")
+            with open(model_path, "rb") as f:
                 modelo = pickle.load(f)
             
             # Preparar datos para la predicción en el orden correcto
